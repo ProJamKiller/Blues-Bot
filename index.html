@@ -9,65 +9,17 @@
 
   <style>
     body { font-family: system-ui, sans-serif; margin: 24px; background:#111; color:#eee; }
-    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 12px 0; }
-    label { display:flex; gap:8px; align-items:center; }
-    select, input[type="range"], button { font-size: 16px; }
-    button { padding:10px 16px; cursor:pointer; }
-    .small { color:#aaa; font-size:13px; }
+    button { padding:10px 16px; font-size:16px; cursor:pointer; margin-right:8px; }
   </style>
 </head>
 
 <body>
   <h1>Blues Bot</h1>
 
-  <div class="row">
-    <button id="play">Play</button>
-    <button id="stop">Stop</button>
-
-    <label>Style
-      <select id="style">
-        <option value="blues">Blues</option>
-        <option value="bluesrock">Blues Rock</option>
-        <option value="modern">Modern Blues</option>
-      </select>
-    </label>
-
-    <label>Key
-      <select id="key">
-        <option>C</option><option>Db</option><option>D</option><option>Eb</option><option>E</option>
-        <option>F</option><option>Gb</option><option>G</option><option>Ab</option><option>A</option>
-        <option>Bb</option><option>B</option>
-      </select>
-    </label>
-
-    <label>Tempo: <span id="tempoLabel">100</span>
-      <input id="tempo" type="range" min="60" max="180" value="100" />
-    </label>
-  </div>
-
-  <div class="small">12-bar form: I I I I | IV IV I I | V IV I V</div>
+  <button id="play">Play</button>
+  <button id="stop">Stop</button>
 
   <script>
-    // ---------- Key helpers ----------
-    const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-    const KEY_TO_SEMITONE = { C:0, Db:1, D:2, Eb:3, E:4, F:5, Gb:6, G:7, Ab:8, A:9, Bb:10, B:11 };
-
-    function midiToNoteName(m) {
-      const name = NOTE_NAMES[m % 12];
-      const oct = Math.floor(m / 12) - 1;
-      return `${name}${oct}`;
-    }
-
-    function getRoots(key) {
-      const base = KEY_TO_SEMITONE[key];
-      // anchor I near E2 range, then shift
-      const I = 40 + (base - 4); // 40 is E2
-      return { I, IV: I + 5, V: I + 7 };
-    }
-
-    const BLUES_FORM = ["I","I","I","I","IV","IV","I","I","V","IV","I","V"];
-
-    // ---------- Procedural instruments (non-8bit vibe) ----------
     let started = false;
 
     const kick = new Tone.MembraneSynth({
@@ -84,90 +36,41 @@
 
     const hihat = new Tone.NoiseSynth({
       noise: { type: "white" },
-      envelope: { attack: 0.001, decay: 0.045, sustain: 0 }
+      envelope: { attack: 0.001, decay: 0.04, sustain: 0 }
     }).toDestination();
 
     const bass = new Tone.PluckSynth({
       attackNoise: 1,
-      dampening: 3200,
+      dampening: 3500,
       resonance: 0.92
     }).toDestination();
 
-    // soft “room/air” to reduce chiptune vibe
-    const reverb = new Tone.Reverb({ decay: 1.2, wet: 0.15 }).toDestination();
-    bass.connect(reverb);
+    function playKick(time) { kick.triggerAttackRelease("C1", 0.15, time, 0.9); }
+    function playSnare(time) { snare.triggerAttackRelease(0.12, time, 0.6); }
+    function playHat(time) { hihat.triggerAttackRelease(0.03, time, 0.3); }
 
-    function playKick(time, vel=0.9) { kick.triggerAttackRelease("C1", 0.15, time, vel); }
-    function playSnare(time, vel=0.6) { snare.triggerAttackRelease(0.12, time, vel); }
-    function playHat(time, vel=0.32) { hihat.triggerAttackRelease(0.03, time, vel); }
-
-    function playBass(rootMidi, time, style) {
-      // Human drift depends on style
-      const drift = style === "bluesrock" ? (Math.random()-0.5)*0.008 : (Math.random()-0.5)*0.02;
-      const note = midiToNoteName(rootMidi);
-      bass.triggerAttack(note, time + drift, 0.85);
+    function playBass(note, time) {
+      const drift = (Math.random() - 0.5) * 0.02;
+      bass.triggerAttack(note, time + drift, 0.8);
     }
 
-    // ---------- Groove engine ----------
-    let bar = 0;
-
-    function playOneBar(time, style, roots) {
-      const degree = BLUES_FORM[bar % 12];
-      const rootMidi = roots[degree];
-
-      // Feel: blues = a little more laid-back; rock = tighter/harder hats
-      const hatVel = style === "bluesrock" ? 0.45 : (style === "modern" ? 0.30 : 0.34);
-      const snareVel = style === "bluesrock" ? 0.75 : 0.62;
-      const kickVel  = style === "modern" ? 0.85 : 0.9;
-
-      // basic backbeat (1 bar = 1m)
-      playKick(time, kickVel);      playHat(time, hatVel);
-      playHat(time + 0.25, hatVel * 0.9);
-      playSnare(time + 0.5, snareVel); playHat(time + 0.5, hatVel);
-      playHat(time + 0.75, hatVel * 0.9);
-      playKick(time + 1.0, kickVel);  playHat(time + 1.0, hatVel);
-
-      // bass on downbeat; later we’ll add walking
-      playBass(rootMidi, time, style);
-
-      // tiny occasional snare ghost for life
-      if (style !== "bluesrock" && Math.random() < 0.25) {
-        playSnare(time + 0.25, 0.18);
-      }
-
-      bar++;
+    function playGroove(time) {
+      playKick(time);        playHat(time);
+      playHat(time + 0.25);
+      playSnare(time + 0.5); playHat(time + 0.5);
+      playHat(time + 0.75);
+      playKick(time + 1.0);  playHat(time + 1.0);
+      playBass("C2", time);
     }
-
-    // ---------- UI wiring ----------
-    const styleEl = document.getElementById("style");
-    const keyEl = document.getElementById("key");
-    const tempoEl = document.getElementById("tempo");
-    const tempoLabel = document.getElementById("tempoLabel");
-
-    tempoEl.addEventListener("input", () => {
-      tempoLabel.textContent = tempoEl.value;
-      Tone.Transport.bpm.value = Number(tempoEl.value);
-    });
 
     document.getElementById("play").onclick = async () => {
-      if (!started) {
-        await Tone.start();
-        started = true;
-      }
-
-      const style = styleEl.value;
-      const key = keyEl.value;
-      const tempo = Number(tempoEl.value);
-      Tone.Transport.bpm.value = tempo;
-
-      bar = 0;
-      const roots = getRoots(key);
+      if (!started) { await Tone.start(); started = true; }
 
       Tone.Transport.stop();
       Tone.Transport.cancel();
 
       Tone.Transport.scheduleRepeat((time) => {
-        playOneBar(time, style, roots);
+        playGroove(time);
       }, "1m");
 
       Tone.Transport.start();
