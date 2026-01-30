@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Blues Bot</title>
+
+  <script src="https://unpkg.com/tone@14.8.49/build/Tone.js"></script>
+
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 24px; background:#111; color:#eee; }
+    button { padding:10px 16px; font-size:16px; cursor:pointer; margin-right:8px; }
+  </style>
+</head>
+
+<body>
+  <h1>Blues Bot</h1>
+
+  <button id="play">Play</button>
+  <button id="stop">Stop</button>
+
+  <script>
+    let started = false;
+
+    const kick = new Tone.MembraneSynth({
+      pitchDecay: 0.05,
+      octaves: 8,
+      oscillator: { type: "sine" },
+      envelope: { attack: 0.001, decay: 0.35, sustain: 0 }
+    }).toDestination();
+
+    const snare = new Tone.NoiseSynth({
+      noise: { type: "white" },
+      envelope: { attack: 0.001, decay: 0.18, sustain: 0 }
+    }).toDestination();
+
+    const hihat = new Tone.NoiseSynth({
+      noise: { type: "white" },
+      envelope: { attack: 0.001, decay: 0.04, sustain: 0 }
+    }).toDestination();
+
+    const bass = new Tone.PluckSynth({
+      attackNoise: 1,
+      dampening: 3500,
+      resonance: 0.92
+    }).toDestination();
+
+    function playKick(time) { kick.triggerAttackRelease("C1", 0.15, time, 0.9); }
+    function playSnare(time) { snare.triggerAttackRelease(0.12, time, 0.6); }
+    function playHat(time) { hihat.triggerAttackRelease(0.03, time, 0.3); }
+    function playBass(note, time) {
+      const drift = (Math.random() - 0.5) * 0.02;
+      bass.triggerAttack(note, time + drift, 0.8);
+    }
+
+    function playGroove(time) {
+      playKick(time);        playHat(time);
+      playHat(time + 0.25);
+      playSnare(time + 0.5); playHat(time + 0.5);
+      playHat(time + 0.75);
+      playKick(time + 1.0);  playHat(time + 1.0);
+      playBass("C2", time);
+    }
+
+    document.getElementById("play").onclick = async () => {
+      if (!started) { await Tone.start(); started = true; }
+
+      Tone.Transport.stop();
+      Tone.Transport.cancel();
+
+      Tone.Transport.scheduleRepeat((time) => {
+        playGroove(time);
+      }, "1m");
+
+      Tone.Transport.start();
+    };
+
+    document.getElementById("stop").onclick = () => {
+      Tone.Transport.stop();
+    };
+  </script>
+</body>
+</html>
