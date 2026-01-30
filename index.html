@@ -12,13 +12,14 @@
     .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin: 12px 0; }
     label { display:flex; gap:8px; align-items:center; }
     select, input[type="range"], button { font-size: 16px; }
-    button { padding:10px 16px; cursor:pointer; margin-right:8px; }
-    .small { color:#aaa; font-size:13px; }
+    button { padding:10px 16px; cursor:pointer; }
+    .small { color:#aaa; font-size:13px; line-height:1.4; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #333; border-radius:999px; margin-left:8px; }
   </style>
 </head>
 
 <body>
-  <h1>Blues Bot</h1>
+  <h1>Blues Bot <span class="pill" id="barLabel">bar 1/12</span></h1>
 
   <div class="row">
     <button id="play">Play</button>
@@ -26,9 +27,9 @@
 
     <label>Style
       <select id="style">
-        <option value="blues">Blues</option>
-        <option value="bluesrock">Blues Rock</option>
-        <option value="modern">Modern Blues</option>
+        <option value="blues">Blues (Shuffle)</option>
+        <option value="bluesrock">Blues Rock (Tighter)</option>
+        <option value="modern">Modern Blues (Pocket)</option>
       </select>
     </label>
 
@@ -41,108 +42,258 @@
     </label>
 
     <label>Tempo: <span id="tempoLabel">100</span>
-      <input id="tempo" type="range" min="60" max="180" value="100" />
+      <input id="tempo" type="range" min="60" max="160" value="100" />
+    </label>
+
+    <label>Intensity
+      <select id="intensity">
+        <option value="easy">Easy</option>
+        <option value="medium" selected>Medium</option>
+        <option value="spicy">Spicy</option>
+      </select>
     </label>
   </div>
 
-  <div class="small">Form: I I I I | IV IV I I | V IV I V</div>
+  <div class="small">
+    12-bar: I I I I | IV IV I I | V IV I V (turnaround). Walking bass + comping + shuffle.
+  </div>
 
   <script>
-    // ---------- Key helpers ----------
+    // ---------- Notes / keys ----------
     const NOTE_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
     const KEY_TO_SEMITONE = { C:0, Db:1, D:2, Eb:3, E:4, F:5, Gb:6, G:7, Ab:8, A:9, Bb:10, B:11 };
 
-    function midiToNoteName(m) {
+    function midiToName(m) {
       const name = NOTE_NAMES[m % 12];
       const oct = Math.floor(m / 12) - 1;
       return `${name}${oct}`;
     }
 
-    function getRoots(key) {
+    function getRootsMidi(key) {
       const base = KEY_TO_SEMITONE[key];
-      // anchor I near E2, then shift by key
-      const I = 40 + (base - 4); // 40 is E2
+      // anchor I around E2 (40 = E2)
+      const I = 40 + (base - 4);
       return { I, IV: I + 5, V: I + 7 };
     }
 
+    // Dominant7 chord (root, 3, 5, b7)
+    function dom7(rootMidi) { return [rootMidi, rootMidi + 4, rootMidi + 7, rootMidi + 10]; }
+
+    // ---------- 12-bar form ----------
     const FORM = ["I","I","I","I","IV","IV","I","I","V","IV","I","V"];
 
-    // ---------- Instruments ----------
+    // ---------- Instruments (no samples, but not “8-bit”) ----------
     let started = false;
 
+    // Drums: kick/body + snare/noise + hats/noise
     const kick = new Tone.MembraneSynth({
-      pitchDecay: 0.05,
-      octaves: 8,
+      pitchDecay: 0.03,
+      octaves: 6,
       oscillator: { type: "sine" },
-      envelope: { attack: 0.001, decay: 0.35, sustain: 0 }
-    }).toDestination();
+      envelope: { attack: 0.001, decay: 0.25, sustain: 0 }
+    });
 
-    const snare = new Tone.NoiseSynth({
+    const snareNoise = new Tone.NoiseSynth({
       noise: { type: "white" },
-      envelope: { attack: 0.001, decay: 0.18, sustain: 0 }
-    }).toDestination();
+      envelope: { attack: 0.001, decay: 0.12, sustain: 0 }
+    });
 
-    const hihat = new Tone.NoiseSynth({
+    const snareBody = new Tone.MembraneSynth({
+      pitchDecay: 0.01,
+      octaves: 2,
+      oscillator: { type: "triangle" },
+      envelope: { attack: 0.001, decay: 0.12, sustain: 0 }
+    });
+
+    const hat = new Tone.NoiseSynth({
       noise: { type: "white" },
-      envelope: { attack: 0.001, decay: 0.045, sustain: 0 }
-    }).toDestination();
+      envelope: { attack: 0.001, decay: 0.03, sustain: 0 }
+    });
 
+    // Bass: plucked string model + saturation
     const bass = new Tone.PluckSynth({
-      attackNoise: 1,
-      dampening: 3200,
-      resonance: 0.92
-    }).toDestination();
+      attackNoise: 1.2,
+      dampening: 3000,
+      resonance: 0.95
+    });
 
-    // Small reverb so it doesn’t feel “dry/chippy”
-    const reverb = new Tone.Reverb({ decay: 1.1, wet: 0.15 }).toDestination();
-    bass.connect(reverb);
+    // Comp: organ-ish poly synth + chorus
+    const comp = new Tone.PolySynth(Tone.Synth, {
+      oscillator: { type: "sine" },
+      envelope: { attack: 0.01, decay: 0.18, sustain: 0.5, release: 0.25 }
+    });
 
-    function playKick(time, vel=0.9) { kick.triggerAttackRelease("C1", 0.15, time, vel); }
-    function playSnare(time, vel=0.6) { snare.triggerAttackRelease(0.12, time, vel); }
-    function playHat(time, vel=0.32) { hihat.triggerAttackRelease(0.03, time, vel); }
+    // FX chain to make it less “toy”
+    const drumBus = new Tone.Gain(0.9);
+    const bassDrive = new Tone.Distortion(0.25);
+    const room = new Tone.Reverb({ decay: 1.4, wet: 0.18 });
+    const compChorus = new Tone.Chorus(2.2, 1.8, 0.25).start();
 
-    function playBass(rootMidi, time, style) {
-      const drift = style === "bluesrock"
-        ? (Math.random() - 0.5) * 0.008
-        : (Math.random() - 0.5) * 0.02;
+    kick.connect(drumBus);
+    snareNoise.connect(drumBus);
+    snareBody.connect(drumBus);
+    hat.connect(drumBus);
 
-      bass.triggerAttack(midiToNoteName(rootMidi), time + drift, 0.85);
+    bass.chain(bassDrive, room);
+    comp.chain(compChorus, room);
+
+    drumBus.toDestination();
+    bassDrive.toDestination();
+    room.toDestination();
+
+    // ---------- Feel / timing ----------
+    function applyStyle(style) {
+      // Transport swing is the easiest “this is blues” knob.
+      // NOTE: Swing affects 8th-note feel; we schedule in 8ths for shuffle.
+      if (style === "blues") {
+        Tone.Transport.swing = 0.62;
+        Tone.Transport.swingSubdivision = "8n";
+      } else if (style === "bluesrock") {
+        Tone.Transport.swing = 0.18; // tighter
+        Tone.Transport.swingSubdivision = "8n";
+      } else {
+        Tone.Transport.swing = 0.28; // pocket
+        Tone.Transport.swingSubdivision = "8n";
+      }
     }
 
-    // ---------- Groove engine ----------
-    let bar = 0;
+    function humanDrift(style) {
+      // seconds
+      if (style === "bluesrock") return (Math.random() - 0.5) * 0.006;
+      if (style === "modern") return (Math.random() - 0.5) * 0.010;
+      return (Math.random() - 0.5) * 0.014;
+    }
 
-    function playBar(time, style, roots) {
-      const degree = FORM[bar % 12];
-      const rootMidi = roots[degree];
+    // ---------- Pattern generators ----------
+    // Walking bass pattern in scale degrees relative to chord root (dominant sound):
+    // Root, 3, 5, 6, b7, 6, 5, 3 (classic shuffle walk feel)
+    const WALK = [0, 4, 7, 9, 10, 9, 7, 4];
 
-      const hatVel = style === "bluesrock" ? 0.45 : (style === "modern" ? 0.28 : 0.34);
-      const snareVel = style === "bluesrock" ? 0.75 : 0.62;
-      const kickVel  = style === "modern" ? 0.85 : 0.9;
+    function approachTo(nextRootMidi, currentRootMidi) {
+      // simple chromatic approach from below or above (random)
+      const dir = Math.random() < 0.7 ? -1 : 1;
+      let target = nextRootMidi + dir;
+      // keep in sensible low range
+      while (target < 28) target += 12;
+      while (target > 52) target -= 12;
+      return target;
+    }
 
-      // Backbeat (1 bar = 1m)
-      playKick(time, kickVel);       playHat(time, hatVel);
-      playHat(time + 0.25, hatVel * 0.9);
-      playSnare(time + 0.5, snareVel); playHat(time + 0.5, hatVel);
-      playHat(time + 0.75, hatVel * 0.9);
-      playKick(time + 1.0, kickVel); playHat(time + 1.0, hatVel);
+    // Comp rhythm: hits on 2 and 4, with extra pushes depending on intensity/style.
+    function compHitTimes(style, intensity) {
+      // within a bar in beats (0..4)
+      // Using 8th-based feel, but keep it simple for playability.
+      const hits = [1, 3]; // 2 and 4 (because beat index starts at 0)
+      if (intensity !== "easy" && style !== "modern") hits.push(2.5); // a push
+      if (intensity === "spicy" && style === "bluesrock") hits.push(0.5); // early stab
+      return hits.sort((a,b)=>a-b);
+    }
 
-      // Bass follows the changes
-      playBass(rootMidi, time, style);
+    // Drums: shuffle hats (8ths), snare on 2/4, kick on 1/(sometimes 3).
+    function scheduleDrums(time, style, intensity) {
+      const drift = humanDrift(style);
+      const hatVel = style === "bluesrock" ? 0.45 : 0.34;
+      const snVel = style === "bluesrock" ? 0.75 : 0.62;
+      const kickVel = style === "modern" ? 0.82 : 0.90;
 
-      // occasional ghost note for feel
-      if (style !== "bluesrock" && Math.random() < 0.25) {
-        playSnare(time + 0.25, 0.18);
+      // hats on 8ths: 0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5 beats
+      for (let i=0;i<8;i++){
+        const t = time + (i * 0.5) + drift * 0.4;
+        hat.triggerAttackRelease(0.02, t, hatVel * (i % 2 ? 0.85 : 1.0));
       }
 
-      bar++;
+      // kick
+      kick.triggerAttackRelease("C1", 0.12, time + 0 + drift, kickVel);
+      if (intensity !== "easy") {
+        kick.triggerAttackRelease("C1", 0.10, time + 2 + drift*0.7, kickVel * 0.85);
+      }
+
+      // snare 2 & 4
+      const snT1 = time + 1 + drift;
+      const snT2 = time + 3 + drift;
+      snareNoise.triggerAttackRelease(0.08, snT1, snVel);
+      snareBody.triggerAttackRelease("D2", 0.08, snT1, snVel * 0.35);
+
+      snareNoise.triggerAttackRelease(0.08, snT2, snVel);
+      snareBody.triggerAttackRelease("D2", 0.08, snT2, snVel * 0.35);
+
+      // ghost notes
+      if (style !== "bluesrock" && Math.random() < (intensity === "spicy" ? 0.55 : 0.35)) {
+        const g = time + 1.5 + drift*0.8;
+        snareNoise.triggerAttackRelease(0.05, g, 0.18);
+      }
+      if (intensity === "spicy" && Math.random() < 0.45) {
+        const g2 = time + 3.5 + drift*0.8;
+        snareNoise.triggerAttackRelease(0.05, g2, 0.16);
+      }
     }
 
-    // ---------- UI wiring ----------
+    function scheduleBass(time, style, intensity, chordRootMidi, nextRootMidi) {
+      // 8 notes per bar (8ths) for shuffle walk
+      const baseVel = style === "bluesrock" ? 0.90 : 0.82;
+      const density = intensity === "easy" ? 0.75 : (intensity === "medium" ? 0.92 : 1.0);
+
+      for (let i=0;i<8;i++){
+        if (Math.random() > density) continue;
+        const drift = humanDrift(style);
+        let midi = chordRootMidi + WALK[i];
+        // keep low
+        while (midi < 28) midi += 12;
+        while (midi > 52) midi -= 12;
+        const t = time + (i * 0.5) + drift;
+        bass.triggerAttack(midiToName(midi), t, baseVel * (i===0 ? 1.0 : 0.92));
+      }
+
+      // Turnaround: bar 12 approaches next I
+      if ((barIndex % 12) === 11) {
+        const a = approachTo(nextRootMidi, chordRootMidi);
+        bass.triggerAttack(midiToName(a), time + 3.5 + humanDrift(style), 0.75);
+      }
+    }
+
+    function scheduleComp(time, style, intensity, chordRootMidi) {
+      // Comp around middle register
+      const root = chordRootMidi + 24; // up 2 octaves
+      const chord = dom7(root);
+
+      const hits = compHitTimes(style, intensity);
+      const vel = style === "modern" ? 0.28 : 0.34;
+
+      for (const beat of hits) {
+        const t = time + beat + humanDrift(style) * 0.6;
+        comp.triggerAttackRelease(chord.map(midiToName), 0.25, t, vel);
+      }
+    }
+
+    // ---------- Transport / scheduling ----------
+    let barIndex = 0;
+    const barLabel = document.getElementById("barLabel");
+
+    function updateBarLabel() {
+      barLabel.textContent = `bar ${((barIndex % 12) + 1)}/12`;
+    }
+
+    function scheduleBar(time, style, intensity, roots) {
+      const degree = FORM[barIndex % 12];
+      const nextDegree = FORM[(barIndex + 1) % 12];
+
+      const chordRootMidi = roots[degree];
+      const nextRootMidi = roots[nextDegree];
+
+      scheduleDrums(time, style, intensity);
+      scheduleBass(time, style, intensity, chordRootMidi, nextRootMidi);
+      scheduleComp(time, style, intensity, chordRootMidi);
+
+      barIndex++;
+      updateBarLabel();
+    }
+
+    // ---------- UI ----------
     const styleEl = document.getElementById("style");
     const keyEl = document.getElementById("key");
     const tempoEl = document.getElementById("tempo");
     const tempoLabel = document.getElementById("tempoLabel");
+    const intensityEl = document.getElementById("intensity");
 
     tempoEl.addEventListener("input", () => {
       tempoLabel.textContent = tempoEl.value;
@@ -154,17 +305,22 @@
 
       const style = styleEl.value;
       const key = keyEl.value;
+      const intensity = intensityEl.value;
       const tempo = Number(tempoEl.value);
 
       Tone.Transport.stop();
       Tone.Transport.cancel();
+
       Tone.Transport.bpm.value = tempo;
+      applyStyle(style);
 
-      bar = 0;
-      const roots = getRoots(key);
+      barIndex = 0;
+      updateBarLabel();
+      const roots = getRootsMidi(key);
 
+      // Schedule each bar (1 measure)
       Tone.Transport.scheduleRepeat((time) => {
-        playBar(time, style, roots);
+        scheduleBar(time, style, intensity, roots);
       }, "1m");
 
       Tone.Transport.start();
